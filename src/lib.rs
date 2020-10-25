@@ -1,3 +1,82 @@
+//! A simple rust write-ahead-logging implementation.
+//!
+//! Features
+//!  - Optimized for sequential reads & writes
+//!  - Easy atomic log compaction
+//!  - Advisory locking
+//!  - CRC32 checksums
+//!  - Range scans
+//!  - Persistent log entry index
+//!
+//! The entire log is scanned through on startup in order to detect & clean interrupted
+//! writes and determine the length of the log. It's recommended to compact the log when
+//! old entries are no longer likely to be used.
+//! 
+//! ## Usage:
+//! 
+//! ```
+//! use simple_wal::LogFile;
+//!
+//! let path = std::path::Path::new("./wal-log");
+//! 
+//! {
+//!     let mut log = LogFile::open(path).unwrap();
+//! 
+//!     // write to log
+//!     log.write(&mut b"log entry".to_vec()).unwrap();
+//!     log.write(&mut b"foobar".to_vec()).unwrap();
+//!     log.write(&mut b"123".to_vec()).unwrap();
+//!    
+//!     // flush to disk
+//!     log.flush().unwrap();
+//! }
+//!
+//! {
+//!     let mut log = LogFile::open(path).unwrap();
+//! 
+//!     // Iterate through the log
+//!     let mut iter = log.iter(..).unwrap();
+//!     assert_eq!(iter.next().unwrap().unwrap(), b"log entry".to_vec());
+//!     assert_eq!(iter.next().unwrap().unwrap(), b"foobar".to_vec());
+//!     assert_eq!(iter.next().unwrap().unwrap(), b"123".to_vec());
+//!     assert!(iter.next().is_none());
+//! }
+//!
+//! {
+//!     let mut log = LogFile::open(path).unwrap();
+//!
+//!     // Compact the log
+//!     log.compact(1);
+//!
+//!     // Iterate through the log
+//!     let mut iter = log.iter(..).unwrap();
+//!     assert_eq!(iter.next().unwrap().unwrap(), b"foobar".to_vec());
+//!     assert_eq!(iter.next().unwrap().unwrap(), b"123".to_vec());
+//!     assert!(iter.next().is_none());
+//! }
+//!
+//! # let _ = std::fs::remove_file(path);
+//! ```
+//! 
+//! 
+//! ## Log Format:
+//! 
+//! ```txt
+//! 00 01 02 03 04 05 06 07|08 09 10 11 12 13 14 15|.......|-4 -3 -2 -1|
+//! -----------------------|-----------------------|-------|-----------|
+//! starting index         |entry length           | entry | crc32     |
+//! unsigned 64 bit int le |unsigned 64 bit int le | data  | 32bit, le |
+//! ```
+//!
+//! Numbers are stored in little-endian format.
+//!
+//! The first 8 bytes in the WAL is the starting index.
+//! 
+//! Each entry follows the following format:
+//! 1. A 64 bit unsigned int for the entry size.
+//! 2. The entry data
+//! 3. A 32 bit crc32 checksum.
+
 use advisory_lock::AdvisoryFileLock;
 use std::io::{self, Read, Write, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -6,6 +85,8 @@ use crc32fast;
 use std::convert::TryInto;
 use thiserror::Error;
 
+
+/// A write-ahead-log.
 pub struct LogFile {
     file: AdvisoryFileLock,
     path: PathBuf,
@@ -16,6 +97,7 @@ pub struct LogFile {
 }
 
 impl LogFile {
+    /// The first entry in the log
     fn first_entry<'l>(&'l mut self) -> Result<LogEntry<'l>, LogError> {
         self.file.seek(SeekFrom::Start(8))?;
 
@@ -27,14 +109,17 @@ impl LogFile {
         })
     }
 
-    fn first_index(&self) -> u64 {
+    /// Returns the index/sequence number of the first entry in the log
+    pub fn first_index(&self) -> u64 {
         self.first_index
     }
 
-    fn last_index(&self) -> u64 {
+    /// Returns the index/sequence number of the last entry in the log
+    pub fn last_index(&self) -> u64 {
         self.first_index + self.len - 1
     }
 
+    /// Iterate through the log
     pub fn iter<'s, R: RangeBounds<u64>>(&'s mut self, range: R) -> Result<LogIterator<'s>, LogError> {
         if self.len == 0 {
             return Ok(LogIterator {
@@ -90,11 +175,14 @@ impl LogFile {
         result
     }
 
+    /// Flush writes to disk
     pub fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
     }
 
-    /// Open the log
+    /// Open the log. Takes out an advisory lock.
+    ///
+    /// This is O(n): we have to iterate to the end of the log in order to clean interrupted writes and determine the length of the log
     pub fn open<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<LogFile, LogError> {
@@ -105,7 +193,6 @@ impl LogFile {
         let file_size = file.metadata()?.len();
         let mut entries: u64 = 0;
         let mut first_index: u64 = 0;
-
 
         if file_size >= 20 {
             first_index = file.read_u64()?;
@@ -139,6 +226,12 @@ impl LogFile {
         })
     }
 
+    /// Compact the log, removing entries older than `new_start_index`.
+    ///
+    /// This is done by copying all entries `>= new_start_index` to a temporary file, than overriding the
+    /// old log file once the copy is complete.
+    ///
+    /// Before compacting, the log is flushed.
     pub fn compact(&mut self, new_start_index: u64) -> Result<(), LogError> {
         self.flush()?;
 
@@ -193,7 +286,9 @@ struct LogEntry<'l> {
 }
 
 impl<'l> LogEntry<'l> {
-    /// Reads into the io::Write. Then returns the next log entry. Note that the next log entry might be out-of-bounds.
+    /// Reads into the io::Write. Then returns the next log entry.
+    ///
+    /// N.b. the next log entry might be out-of-bounds. The implementation of this method may change.
     fn read_to_next<W: Write>(self, write: &mut W) -> Result<LogEntry<'l>, LogError> {
         let LogEntry {log, index} = self;
         let len = log.file.read_u64()?;
@@ -228,7 +323,7 @@ impl<'l> LogEntry<'l> {
     }
 
     /// Seek to the index
-    fn seek(self, to_index: u64) -> Result<LogEntry<'l>, LogError> {
+    pub fn seek(self, to_index: u64) -> Result<LogEntry<'l>, LogError> {
         let LogEntry {log, index} = self;
 
         if to_index > log.first_index + log.len || to_index < log.first_index {
