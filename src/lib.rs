@@ -98,7 +98,12 @@ pub struct LogFile {
 
 impl LogFile {
     /// The first entry in the log
-    fn first_entry<'l>(&'l mut self) -> Result<LogEntry<'l>, LogError> {
+    pub fn first_entry<'l>(&'l mut self) -> Result<LogEntry<'l>, LogError> {
+        if self.len == 0 {
+            return Err(LogError::OutOfBounds);
+        }
+
+        // Seek past to position 8 (immediately after the starting index)
         self.file.seek(SeekFrom::Start(8))?;
 
         let index = self.first_index;
@@ -107,6 +112,11 @@ impl LogFile {
             log: self,
             index
         })
+    }
+
+    /// Seek to the given entry in the log
+    pub fn seek<'l>(&'l mut self, to_index: u64) -> Result<LogEntry<'l>, LogError> {
+        self.first_entry()?.seek(to_index)
     }
 
     /// Returns the index/sequence number of the first entry in the log
@@ -137,8 +147,8 @@ impl LogFile {
 
         let start = match range.start_bound() {
             Bound::Unbounded => self.first_entry()?,
-            Bound::Included(x) => self.first_entry()?.seek(*x)?,
-            Bound::Excluded(x) => self.first_entry()?.seek(*x + 1)?
+            Bound::Included(x) => self.seek(*x)?,
+            Bound::Excluded(x) => self.seek(*x + 1)?
         };
 
         Ok(LogIterator {
@@ -167,8 +177,7 @@ impl LogFile {
         if result.is_ok() {
             self.len += 1;
         } else {
-            // Go back to the end of the file and trim the data written.
-            self.file.seek(SeekFrom::Start(end_pos))?;
+            // Trim the data written.
             self.file.set_len(end_pos + 1)?;
         }
         
@@ -235,11 +244,8 @@ impl LogFile {
     pub fn compact(&mut self, new_start_index: u64) -> Result<(), LogError> {
         self.flush()?;
 
-        {
-            let entry = self.first_entry()?;
-            entry.seek(new_start_index)?;
-        }
-        
+        // Seek to the start index. This will also change the file cursor, allowing io::copy to correctly operate.
+        self.seek(new_start_index)?;
 
         let mut temp_file_path = std::env::temp_dir().to_path_buf();
         temp_file_path.set_file_name(format!("log-{}", rand::random::<u32>()));
@@ -280,16 +286,22 @@ impl From<advisory_lock::FileLockError> for LogError {
     }
 }
 
-struct LogEntry<'l> {
+/// An entry in the log.
+///
+/// Ownership of this struct represents that the file has been seeked to the
+/// start of the log entry.
+pub struct LogEntry<'l> {
     log: &'l mut LogFile,
     index: u64
 }
 
 impl<'l> LogEntry<'l> {
-    /// Reads into the io::Write. Then returns the next log entry.
-    ///
-    /// N.b. the next log entry might be out-of-bounds. The implementation of this method may change.
-    fn read_to_next<W: Write>(self, write: &mut W) -> Result<LogEntry<'l>, LogError> {
+    pub fn index(&self) -> u64 {
+        self.index
+    }
+
+    /// Reads into the io::Write and returns the next log entry if in-bounds.
+    pub fn read_to_next<W: Write>(self, write: &mut W) -> Result<Option<LogEntry<'l>>, LogError> {
         let LogEntry {log, index} = self;
         let len = log.file.read_u64()?;
 
@@ -316,22 +328,24 @@ impl<'l> LogEntry<'l> {
             return Err(LogError::BadChecksum);
         }
 
-        Ok(LogEntry {
-            log,
-            index: index + 1
-        })
+        let next_index = index + 1;
+
+        if log.first_index + log.len > next_index {
+            Ok(Some(LogEntry {
+                log,
+                index: next_index
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
-    /// Seek to the index
+    /// Seek forwards to the index. Only forwards traversal is allowed.
     pub fn seek(self, to_index: u64) -> Result<LogEntry<'l>, LogError> {
         let LogEntry {log, index} = self;
 
-        if to_index > log.first_index + log.len || to_index < log.first_index {
+        if to_index > log.first_index + log.len || to_index < index {
             return Err(LogError::OutOfBounds)
-        }
-
-        if index > to_index {
-            return log.first_entry()?.seek(to_index)
         }
 
         for _ in index..to_index {
@@ -366,8 +380,7 @@ impl<'l> Iterator for LogIterator<'l> {
         Some(
             match entry.read_to_next(&mut content) {
                 Ok(next) => {
-                    self.next = Some(next);
-
+                    self.next = next;
                     Ok(content)
                 },
                 Err(err) => Err(err)
@@ -435,6 +448,17 @@ mod tests {
             });
         
             assert!(read.eq(entries.to_vec()));
+        }
+
+        {
+            let mut log = LogFile::open(path).unwrap();
+
+            let entry = log.seek(1).unwrap();
+            let mut content = vec![];
+            let next = entry.read_to_next(&mut content).unwrap();
+
+            assert_eq!(content, entries[1]);
+            assert!(next.is_none());
         }
 
         std::fs::remove_file(path).unwrap();
