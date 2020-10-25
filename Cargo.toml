@@ -3,6 +3,10 @@ name = "simple_wal"
 version = "0.1.0"
 authors = ["Ben Aubin <ben@benaubin.com>"]
 edition = "2018"
+license = "MIT"
+description = "A simple write-ahead-logging crate."
+documentation = "https://docs.rs/simple_wal"
+repository = "https://github.com/benaubin/simple_wal"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

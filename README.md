@@ -1,6 +1,6 @@
 # simple_wal
 
-A simple rust write-ahead-logging implementation.
+A simple Rust write-ahead-logging crate.
 
 Features
  - Optimized for sequential reads & writes
