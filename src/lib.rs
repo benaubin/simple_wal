@@ -203,7 +203,7 @@ impl LogFile {
         let mut entries: u64 = 0;
         let mut first_index: u64 = 0;
 
-        if file_size >= 20 {
+        if file_size >= 8 {
             first_index = file.read_u64()?;
 
             let mut pos = 8;
@@ -259,6 +259,19 @@ impl LogFile {
 
         self.len = self.len - (new_start_index - self.first_index);
         self.first_index = new_start_index;
+
+        Ok(())
+    }
+
+    /// Clear all entries in the write-ahead-log and restart at the given index.
+    pub fn restart(&mut self, starting_index: u64) -> Result<(), LogError> {
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&starting_index.to_le_bytes())?;
+        self.file.set_len(8)?;
+        self.file.flush()?;
+
+        self.first_index = starting_index;
+        self.len = 0;
 
         Ok(())
     }
@@ -512,6 +525,52 @@ mod tests {
             let mut log = LogFile::open(path).unwrap();
             assert_eq!(log.first_index(), 4);
             assert!(log.iter(..).unwrap().map(|a| a.unwrap()).eq(entries[4..].to_vec().into_iter()));
+        }
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn restart() {
+        let path = std::path::Path::new("./wal-log-restart");
+
+        let _ = std::fs::remove_file(path);
+
+        let entries = & [
+            b"test".to_vec(),
+            b"foobar".to_vec(),
+            b"bbb".to_vec(),
+            b"aaaaa".to_vec(),
+            b"11".to_vec(),
+            b"222".to_vec(),
+            [9; 200].to_vec(),
+            b"bar".to_vec()
+        ];
+
+        {
+            let mut log = LogFile::open(path).unwrap();
+
+            // write to log
+            for entry in entries {
+                log.write(&mut entry.clone()).unwrap();
+            }
+
+            assert_eq!(log.first_index(), 0);
+
+            log.flush().unwrap();
+        }
+
+        {
+            let mut log = LogFile::open(path).unwrap();
+            log.restart(3).unwrap();
+            assert_eq!(log.first_index(), 3);
+            assert_eq!(log.iter(..).unwrap().collect::<Vec<_>>().len(), 0);
+        }
+
+        {
+            let mut log = LogFile::open(path).unwrap();
+            assert_eq!(log.first_index(), 3);
+            assert_eq!(log.iter(..).unwrap().collect::<Vec<_>>().len(), 0);
         }
 
         std::fs::remove_file(path).unwrap();
