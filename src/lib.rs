@@ -46,7 +46,7 @@
 //!     let mut log = LogFile::open(path).unwrap();
 //!
 //!     // Compact the log
-//!     log.compact(1);
+//!     log.compact(1).unwrap();
 //!
 //!     // Iterate through the log
 //!     let mut iter = log.iter(..).unwrap();
