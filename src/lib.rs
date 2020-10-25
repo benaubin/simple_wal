@@ -461,6 +461,14 @@ mod tests {
             assert!(next.is_none());
         }
 
+        {
+            let mut log = LogFile::open(path).unwrap();
+
+            let entry = log.seek(1).unwrap();
+            
+            entry.seek(0).err().expect("Cannot seek backwards");
+        }
+
         std::fs::remove_file(path).unwrap();
     }
 
