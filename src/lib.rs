@@ -122,7 +122,12 @@ impl LogFile {
 
     /// Returns the index/sequence number of the last entry in the log
     pub fn last_index(&self) -> u64 {
-        self.first_index + self.len - 1
+        let last_index = self.first_index + self.len;
+        if last_index > 0 {
+            last_index - 1
+        } else {
+            0
+        }
     }
 
     /// Iterate through the log
@@ -619,6 +624,18 @@ mod tests {
             let read = log.iter(..).unwrap().map(|entry| entry.unwrap());
 
             assert!(read.eq(entries[..1].to_vec()));
+        }
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn last_index_on_empty() {
+        let path = std::path::Path::new("./wal-log-test-last-index");
+        
+        {
+            let log = LogFile::open(path).unwrap();
+            assert_eq!(log.last_index(), 0);
         }
 
         std::fs::remove_file(path).unwrap();
