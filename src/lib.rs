@@ -120,6 +120,11 @@ impl LogFile {
         self.first_index
     }
 
+    /// Return if there are any entries in the log
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Returns the index/sequence number of the last entry in the log
     pub fn last_index(&self) -> u64 {
         let last_index = self.first_index + self.len;
@@ -632,7 +637,7 @@ mod tests {
     #[test]
     fn last_index_on_empty() {
         let path = std::path::Path::new("./wal-log-test-last-index");
-        
+
         {
             let log = LogFile::open(path).unwrap();
             assert_eq!(log.last_index(), 0);
