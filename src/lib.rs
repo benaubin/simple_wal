@@ -26,7 +26,7 @@
 //!     log.write(&mut b"log entry".to_vec()).unwrap();
 //!     log.write(&mut b"foobar".to_vec()).unwrap();
 //!     log.write(&mut b"123".to_vec()).unwrap();
-//!    
+//!
 //!     // flush to disk
 //!     log.flush().unwrap();
 //! }
@@ -194,6 +194,7 @@ impl LogFile {
     /// This is O(n): we have to iterate to the end of the log in order to clean interrupted writes and determine the length of the log
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<LogFile, LogError> {
         let mut file = AdvisoryFileLock::new(&path, advisory_lock::FileLockMode::Exclusive)?;
+        file.try_lock()?;
         let path = path.as_ref().to_owned();
 
         let file_size = file.metadata()?.len();
@@ -622,5 +623,25 @@ mod tests {
         }
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_locking() {
+        let path = std::path::Path::new("./wal-log-test-locking");
+        let _ = std::fs::remove_file(path);
+        let log = LogFile::open(path).unwrap();
+
+        // use flock(1) to verify that we're actually holding the lock
+        let output = std::process::Command::new("flock")
+            .arg("-x")
+            .arg("--nonblock")
+            .arg(&path)
+            .arg("-c")
+            .arg("echo hello")
+            .status()
+            .unwrap();
+        assert_eq!(output.code().unwrap(), 1);
+        assert!(log.len == 0);
     }
 }
