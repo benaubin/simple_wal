@@ -26,7 +26,7 @@
 //!     log.write(&mut b"log entry".to_vec()).unwrap();
 //!     log.write(&mut b"foobar".to_vec()).unwrap();
 //!     log.write(&mut b"123".to_vec()).unwrap();
-//!    
+//!
 //!     // flush to disk
 //!     log.flush().unwrap();
 //! }
@@ -623,5 +623,25 @@ mod tests {
         }
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_locking() {
+        let path = std::path::Path::new("./wal-log-test-locking");
+        let _ = std::fs::remove_file(path);
+        let log = LogFile::open(path).unwrap();
+
+        // use flock(1) to verify that we're actually holding the lock
+        let output = std::process::Command::new("flock")
+            .arg("-x")
+            .arg("--nonblock")
+            .arg(&path)
+            .arg("-c")
+            .arg("echo hello")
+            .status()
+            .unwrap();
+        assert_eq!(output.code().unwrap(), 1);
+        assert!(log.len == 0);
     }
 }
