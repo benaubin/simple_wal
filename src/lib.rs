@@ -194,6 +194,7 @@ impl LogFile {
     /// This is O(n): we have to iterate to the end of the log in order to clean interrupted writes and determine the length of the log
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<LogFile, LogError> {
         let mut file = AdvisoryFileLock::new(&path, advisory_lock::FileLockMode::Exclusive)?;
+        file.try_lock()?;
         let path = path.as_ref().to_owned();
 
         let file_size = file.metadata()?.len();
